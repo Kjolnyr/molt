@@ -352,7 +352,7 @@ pub fn cmd_error(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResu
 /// Terminates the application by calling `std::process::exit()`.
 /// If given, _returnCode_ must be an integer return code; if absent, it
 /// defaults to 0.
-pub fn cmd_exit(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
+pub fn _cmd_exit(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 1, 2, "?returnCode?")?;
 
     let return_code: MoltInt = if argv.len() == 1 {
@@ -433,6 +433,7 @@ pub fn cmd_for(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult 
 /// * In Standard TCL, `foreach` can loop over several lists at the same time.
 pub fn cmd_foreach(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 4, 4, "varList list body")?;
+
 
     let var_list = &*argv[1].as_list()?;
     let list = &*argv[2].as_list()?;
@@ -790,7 +791,7 @@ pub fn cmd_llength(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltRe
 /// # pdump
 ///
 /// Dumps profile data.  Developer use only.
-pub fn cmd_pdump(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
+pub fn _cmd_pdump(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 1, 1, "")?;
 
     interp.profile_dump();
@@ -801,7 +802,7 @@ pub fn cmd_pdump(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResul
 /// # pclear
 ///
 /// Clears profile data.  Developer use only.
-pub fn cmd_pclear(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
+pub fn _cmd_pclear(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 1, 1, "")?;
 
     interp.profile_clear();
@@ -984,7 +985,7 @@ pub fn cmd_set(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult 
 /// # source *filename*
 ///
 /// Sources the file, returning the result.
-pub fn cmd_source(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
+pub fn _cmd_source(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 2, 2, "filename")?;
 
     let filename = argv[1].as_str();
@@ -1074,7 +1075,11 @@ pub fn cmd_string_compare(_interp: &mut Interp, _: ContextID, argv: &[Value]) ->
 
         molt_ok!(util::compare_len(val1.as_str(), val2.as_str(), length)?)
     } else {
-        molt_ok!(util::compare_len(argv[arglen - 2].as_str(), argv[arglen - 1].as_str(), length)?)
+        molt_ok!(util::compare_len(
+            argv[arglen - 2].as_str(),
+            argv[arglen - 1].as_str(),
+            length
+        )?)
     }
 }
 
@@ -1116,7 +1121,8 @@ pub fn cmd_string_equal(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> M
         let flag = util::compare_len(val1.as_str(), val2.as_str(), length)? == 0;
         molt_ok!(flag)
     } else {
-        let flag = util::compare_len(argv[arglen - 2].as_str(), argv[arglen - 1].as_str(), length)? == 0;
+        let flag =
+            util::compare_len(argv[arglen - 2].as_str(), argv[arglen - 1].as_str(), length)? == 0;
         molt_ok!(flag)
     }
 }
@@ -1131,7 +1137,11 @@ pub fn cmd_string_first(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> M
     let start_char: usize = if argv.len() == 5 {
         let arg = argv[4].as_int()?;
 
-        if arg < 0 { 0 } else { arg as usize }
+        if arg < 0 {
+            0
+        } else {
+            arg as usize
+        }
     } else {
         0
     };
@@ -1143,11 +1153,13 @@ pub fn cmd_string_first(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> M
 
     let pos_char: MoltInt = match pos_byte {
         None => -1,
-        Some(b) => haystack[b..]
-            .char_indices()
-            .take_while(|(i, _)| *i < b)
-            .count() as MoltInt
-            + start_char as MoltInt
+        Some(b) => {
+            haystack[b..]
+                .char_indices()
+                .take_while(|(i, _)| *i < b)
+                .count() as MoltInt
+                + start_char as MoltInt
+        }
     };
 
     molt_ok!(pos_char)
@@ -1190,10 +1202,7 @@ pub fn cmd_string_last(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> Mo
 
     let pos_char: MoltInt = match pos_byte {
         None => -1,
-        Some(b) => haystack
-            .char_indices()
-            .take_while(|(i, _)| *i < b)
-            .count() as MoltInt
+        Some(b) => haystack.char_indices().take_while(|(i, _)| *i < b).count() as MoltInt,
     };
 
     molt_ok!(pos_char)
@@ -1295,12 +1304,7 @@ pub fn cmd_string_range(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> M
         return molt_ok!("");
     }
 
-    let clamp = { |i: MoltInt| if i < 0 {
-            0
-        } else {
-            i
-        }
-    };
+    let clamp = { |i: MoltInt| if i < 0 { 0 } else { i } };
 
     let substr = string
         .chars()

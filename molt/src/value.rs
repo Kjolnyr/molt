@@ -180,14 +180,14 @@ use crate::types::MoltList;
 use crate::types::VarName;
 use std::any::Any;
 use std::any::TypeId;
-use std::cell::RefCell;
-use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::RwLock;
+use sync_unsafe_cell::SyncUnsafeCell;
 
 //-----------------------------------------------------------------------------
 // Public Data Types
@@ -196,7 +196,7 @@ use std::str::FromStr;
 #[derive(Clone)]
 pub struct Value {
     /// The actual data, to be shared among multiple instances of `Value`.
-    inner: Rc<InnerValue>,
+    inner: Arc<InnerValue>,
 }
 
 impl Hash for Value {
@@ -208,10 +208,10 @@ impl Hash for Value {
 }
 
 /// The inner value of a `Value`, to be wrapped in an `Rc<T>` so that `Values` can be shared.
-#[derive(Debug)]
+//#[derive(Debug)]
 struct InnerValue {
-    string_rep: UnsafeCell<Option<String>>,
-    data_rep: RefCell<DataRep>,
+    string_rep: SyncUnsafeCell<Option<String>>,
+    data_rep: RwLock<DataRep>,
 }
 
 impl std::fmt::Debug for Value {
@@ -228,24 +228,24 @@ impl Value {
     /// Creates a value whose `InnerValue` is defined by its string rep.
     fn inner_from_string(str: String) -> Self {
         let inner = InnerValue {
-            string_rep: UnsafeCell::new(Some(str)),
-            data_rep: RefCell::new(DataRep::None),
+            string_rep: SyncUnsafeCell::new(Some(str)),
+            data_rep: RwLock::new(DataRep::None),
         };
 
         Self {
-            inner: Rc::new(inner),
+            inner: Arc::new(inner),
         }
     }
 
     /// Creates a value whose `InnerValue` is defined by its data rep.
     fn inner_from_data(data: DataRep) -> Self {
         let inner = InnerValue {
-            string_rep: UnsafeCell::new(None),
-            data_rep: RefCell::new(data),
+            string_rep: SyncUnsafeCell::new(None),
+            data_rep: RwLock::new(data),
         };
 
         Self {
-            inner: Rc::new(inner),
+            inner: Arc::new(inner),
         }
     }
 }
@@ -347,7 +347,7 @@ impl From<MoltDict> for Value {
     /// assert_eq!(value.as_str(), "abc 123");
     /// ```
     fn from(dict: MoltDict) -> Self {
-        Value::inner_from_data(DataRep::Dict(Rc::new(dict)))
+        Value::inner_from_data(DataRep::Dict(Arc::new(dict)))
     }
 }
 
@@ -405,7 +405,7 @@ impl From<MoltList> for Value {
     /// assert_eq!(value.as_str(), "1234 abc");
     /// ```
     fn from(list: MoltList) -> Self {
-        Value::inner_from_data(DataRep::List(Rc::new(list)))
+        Value::inner_from_data(DataRep::List(Arc::new(list)))
     }
 }
 
@@ -422,7 +422,7 @@ impl From<&[Value]> for Value {
     /// assert_eq!(value.as_str(), "1234 abc");
     /// ```
     fn from(list: &[Value]) -> Self {
-        Value::inner_from_data(DataRep::List(Rc::new(list.to_vec())))
+        Value::inner_from_data(DataRep::List(Arc::new(list.to_vec())))
     }
 }
 
@@ -465,7 +465,7 @@ impl Value {
         // Thus, this is safe: as_str() is the only way to retrieve the string_rep,
         // and it computes the string_rep lazily after which it is immutable.
         let slot = unsafe { &mut *self.inner.string_rep.get() };
-        *slot = Some((self.inner.data_rep.borrow()).to_string());
+        *slot = Some((self.inner.data_rep.read().unwrap()).to_string());
 
         slot.as_ref().expect("string rep")
     }
@@ -523,7 +523,7 @@ impl Value {
     pub fn as_bool(&self) -> Result<bool, Exception> {
         // Extra block, so that the dref is dropped before we borrow mutably.
         {
-            let data_ref = self.inner.data_rep.borrow();
+            let data_ref = self.inner.data_rep.read().unwrap();
 
             // FIRST, if we have a boolean then just return it.
             if let DataRep::Bool(flag) = *data_ref {
@@ -543,7 +543,7 @@ impl Value {
         // NEXT, Try to parse the string_rep as a boolean
         let str = self.as_str();
         let flag = Value::get_bool(str)?;
-        *(self.inner.data_rep.borrow_mut()) = DataRep::Bool(flag);
+        *(self.inner.data_rep.write().unwrap()) = DataRep::Bool(flag);
         Ok(flag)
     }
 
@@ -601,9 +601,9 @@ impl Value {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn as_dict(&self) -> Result<Rc<MoltDict>, Exception> {
+    pub fn as_dict(&self) -> Result<Arc<MoltDict>, Exception> {
         // FIRST, if we have the desired type, return it.
-        if let DataRep::Dict(dict) = &*self.inner.data_rep.borrow() {
+        if let DataRep::Dict(dict) = &*self.inner.data_rep.read().unwrap() {
             return Ok(dict.clone());
         }
 
@@ -615,9 +615,9 @@ impl Value {
             return molt_err!("missing value to go with key");
         }
 
-        let dict = Rc::new(list_to_dict(&list));
+        let dict = Arc::new(list_to_dict(&list));
 
-        *self.inner.data_rep.borrow_mut() = DataRep::Dict(dict.clone());
+        *self.inner.data_rep.write().unwrap() = DataRep::Dict(dict.clone());
 
         Ok(dict)
     }
@@ -677,14 +677,14 @@ impl Value {
     /// ```
     pub fn as_int(&self) -> Result<MoltInt, Exception> {
         // FIRST, if we have an integer then just return it.
-        if let DataRep::Int(int) = *self.inner.data_rep.borrow() {
+        if let DataRep::Int(int) = *self.inner.data_rep.read().unwrap() {
             return Ok(int);
         }
 
         // NEXT, Try to parse the string_rep as an integer
         let str = self.as_str();
         let int = Value::get_int(str)?;
-        *self.inner.data_rep.borrow_mut() = DataRep::Int(int);
+        *self.inner.data_rep.write().unwrap() = DataRep::Int(int);
         Ok(int)
     }
 
@@ -755,14 +755,14 @@ impl Value {
     /// ```
     pub fn as_float(&self) -> Result<MoltFloat, Exception> {
         // FIRST, if we have a float then just return it.
-        if let DataRep::Flt(flt) = *self.inner.data_rep.borrow() {
+        if let DataRep::Flt(flt) = *self.inner.data_rep.read().unwrap() {
             return Ok(flt);
         }
 
         // NEXT, Try to parse the string_rep as a float
         let str = self.as_str();
         let flt = Value::get_float(str)?;
-        *self.inner.data_rep.borrow_mut() = DataRep::Flt(flt);
+        *self.inner.data_rep.write().unwrap() = DataRep::Flt(flt);
         Ok(flt)
     }
 
@@ -830,16 +830,16 @@ impl Value {
     /// # Ok("dummy".to_string())
     /// # }
     /// ```
-    pub fn as_list(&self) -> Result<Rc<MoltList>, Exception> {
+    pub fn as_list(&self) -> Result<Arc<MoltList>, Exception> {
         // FIRST, if we have the desired type, return it.
-        if let DataRep::List(list) = &*self.inner.data_rep.borrow() {
+        if let DataRep::List(list) = &*self.inner.data_rep.read().unwrap() {
             return Ok(list.clone());
         }
 
         // NEXT, try to parse the string_rep as a list.
         let str = self.as_str();
-        let list = Rc::new(get_list(str)?);
-        *self.inner.data_rep.borrow_mut() = DataRep::List(list.clone());
+        let list = Arc::new(get_list(str)?);
+        *self.inner.data_rep.write().unwrap() = DataRep::List(list.clone());
 
         Ok(list)
     }
@@ -878,16 +878,16 @@ impl Value {
     /// For internal use only.  Note: this is the normal way to convert a script string
     /// into a Script object.  Converting the Script back into a Tcl string is not
     /// currently supported.
-    pub(crate) fn as_script(&self) -> Result<Rc<Script>, Exception> {
+    pub(crate) fn as_script(&self) -> Result<Arc<Script>, Exception> {
         // FIRST, if we have the desired type, return it.
-        if let DataRep::Script(script) = &*self.inner.data_rep.borrow() {
+        if let DataRep::Script(script) = &*self.inner.data_rep.read().unwrap() {
             return Ok(script.clone());
         }
 
         // NEXT, try to parse the string_rep as a script.
         let str = self.as_str();
-        let script = Rc::new(parser::parse(str)?);
-        *self.inner.data_rep.borrow_mut() = DataRep::Script(script.clone());
+        let script = Arc::new(parser::parse(str)?);
+        *self.inner.data_rep.write().unwrap() = DataRep::Script(script.clone());
 
         Ok(script)
     }
@@ -912,16 +912,16 @@ impl Value {
     /// assert_eq!(var_name.name(), "my_array");
     /// assert_eq!(var_name.index(), Some("1"));
     /// ```
-    pub fn as_var_name(&self) -> Rc<VarName> {
+    pub fn as_var_name(&self) -> Arc<VarName> {
         // FIRST, if we have the desired type, return it.
-        if let DataRep::VarName(var_name) = &*self.inner.data_rep.borrow() {
+        if let DataRep::VarName(var_name) = &*self.inner.data_rep.read().unwrap() {
             return var_name.clone();
         }
 
         // NEXT, try to parse the string_rep as a variable name.
-        let var_name = Rc::new(parser::parse_varname_literal(self.as_str()));
+        let var_name = Arc::new(parser::parse_varname_literal(self.as_str()));
 
-        *self.inner.data_rep.borrow_mut() = DataRep::VarName(var_name.clone());
+        *self.inner.data_rep.write().unwrap() = DataRep::VarName(var_name.clone());
         var_name
     }
 
@@ -947,11 +947,11 @@ impl Value {
     /// See [`Value::as_other`](#method.as_other) and
     /// [`Value::as_copy`](#method.as_copy) for examples of how to
     /// retrieve a `MyType` value from a `Value`.
-    pub fn from_other<T: 'static>(value: T) -> Value
+    pub fn from_other<T: 'static + Send + Sync>(value: T) -> Value
     where
         T: Display + Debug,
     {
-        Value::inner_from_data(DataRep::Other(Rc::new(value)))
+        Value::inner_from_data(DataRep::Other(Arc::new(value)))
     }
 
     /// Tries to interpret the `Value` as a value of external type `T`, parsing
@@ -990,12 +990,12 @@ impl Value {
     ///     let b = *color.blue();
     /// }
     /// ```
-    pub fn as_other<T: 'static>(&self) -> Option<Rc<T>>
+    pub fn as_other<T: 'static + Send + Sync>(&self) -> Option<Arc<T>>
     where
         T: Display + Debug + FromStr,
     {
         // FIRST, if we have the desired type, return it.
-        if let DataRep::Other(other) = &*self.inner.data_rep.borrow() {
+        if let DataRep::Other(other) = &*self.inner.data_rep.read().unwrap() {
             // other is an &Rc<MoltAny>
             if let Ok(out) = other.clone().downcast::<T>() {
                 return Some(out);
@@ -1007,9 +1007,9 @@ impl Value {
         let str = self.as_str();
 
         if let Ok(tval) = str.parse::<T>() {
-            let tval = Rc::new(tval);
+            let tval = Arc::new(tval);
             let out = tval.clone();
-            *self.inner.data_rep.borrow_mut() = DataRep::Other(Rc::new(tval));
+            *self.inner.data_rep.write().unwrap() = DataRep::Other(Arc::new(tval));
             return Some(out);
         }
 
@@ -1049,12 +1049,12 @@ impl Value {
     ///     let b = color.blue();
     /// }
     /// ```
-    pub fn as_copy<T: 'static>(&self) -> Option<T>
+    pub fn as_copy<T: 'static + Send + Sync>(&self) -> Option<T>
     where
         T: Display + Debug + FromStr + Copy,
     {
         // FIRST, if we have the desired type, return it.
-        if let DataRep::Other(other) = &*self.inner.data_rep.borrow() {
+        if let DataRep::Other(other) = &*self.inner.data_rep.read().unwrap() {
             // other is an &Rc<MoltAny>
             if let Ok(out) = other.clone().downcast::<T>() {
                 return Some(*out);
@@ -1066,9 +1066,9 @@ impl Value {
         let str = self.as_str();
 
         if let Ok(tval) = str.parse::<T>() {
-            let tval = Rc::new(tval);
+            let tval = Arc::new(tval);
             let out = tval.clone();
-            *self.inner.data_rep.borrow_mut() = DataRep::Other(Rc::new(tval));
+            *self.inner.data_rep.write().unwrap() = DataRep::Other(Arc::new(tval));
             return Some(*out);
         }
 
@@ -1078,7 +1078,7 @@ impl Value {
 
     /// For use by `expr::expr` in parsing out `Values`.
     pub(crate) fn already_number(&self) -> Option<Datum> {
-        let iref = self.inner.data_rep.borrow();
+        let iref = self.inner.data_rep.read().unwrap();
 
         match *iref {
             DataRep::Flt(flt) => Some(Datum::float(flt)),
@@ -1093,7 +1093,7 @@ impl Value {
 
 /// This trait allows us to except "other" types, and still compute their
 /// string rep on demand.
-trait MoltAny: Any + Display + Debug {
+trait MoltAny: Any + Send + Sync + Display + Debug {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
@@ -1106,16 +1106,16 @@ impl dyn MoltAny {
     }
 
     /// Downcast an `Rc<MoltAny>` to an `Rc<T>`
-    fn downcast<T: 'static>(self: Rc<Self>) -> Result<Rc<T>, Rc<Self>> {
+    fn downcast<T: 'static>(self: Arc<Self>) -> Result<Arc<T>, Arc<Self>> {
         if self.is::<T>() {
-            unsafe { Ok(Rc::from_raw(Rc::into_raw(self) as _)) }
+            unsafe { Ok(Arc::from_raw(Arc::into_raw(self) as _)) }
         } else {
             Err(self)
         }
     }
 }
 
-impl<T: Any + Display + Debug> MoltAny for T {
+impl<T: Any + Send + Sync + Display + Debug> MoltAny for T {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -1137,7 +1137,7 @@ enum DataRep {
     Bool(bool),
 
     /// A Molt Dictionary
-    Dict(Rc<MoltDict>),
+    Dict(Arc<MoltDict>),
 
     /// A Molt integer
     Int(MoltInt),
@@ -1146,16 +1146,16 @@ enum DataRep {
     Flt(MoltFloat),
 
     /// A Molt List
-    List(Rc<MoltList>),
+    List(Arc<MoltList>),
 
     /// A Script
-    Script(Rc<Script>),
+    Script(Arc<Script>),
 
     /// A Variable Name
-    VarName(Rc<VarName>),
+    VarName(Arc<VarName>),
 
     /// An external data type
-    Other(Rc<dyn MoltAny>),
+    Other(Arc<dyn MoltAny>),
 
     /// The Value has no data rep at present.
     None,

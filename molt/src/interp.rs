@@ -440,6 +440,11 @@
 //! [`Value`]: ../value/index.html
 //! [`Interp`]: struct.Interp.html
 
+use rand::rngs::OsRng;
+use rand::Rng;
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::check_args;
 use crate::commands;
 use crate::dict::dict_new;
@@ -455,7 +460,10 @@ use crate::types::*;
 use crate::value::Value;
 use std::any::Any;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::Write;
+use std::sync::Arc;
 use std::time::Instant;
 
 // Constants
@@ -494,7 +502,7 @@ const ZERO: &str = "0";
 #[derive(Default)]
 pub struct Interp {
     // Command Table
-    commands: HashMap<String, Rc<Command>>,
+    commands: HashMap<String, Arc<Command>>,
 
     // Variable Table
     scopes: ScopeStack,
@@ -507,6 +515,18 @@ pub struct Interp {
 
     // Defines the recursion limit for Interp::eval().
     recursion_limit: usize,
+
+    // ms to wait before killing the execution to avoid dos.
+    timeout: u128,
+
+    // The output of a ran command
+    output: String,
+
+    // Since when did we start
+    execution_time: Option<Instant>,
+
+    // The Rng
+    rand: OsRng,
 
     // Current number of eval levels.
     num_levels: usize,
@@ -577,13 +597,13 @@ const NULL_CONTEXT: ContextID = ContextID(0);
 /// and decremented when the command is forgotten.  If the reference count is
 /// decremented to zero, the context is removed.
 struct ContextBox {
-    data: Box<dyn Any>,
+    data: Box<dyn Any + Send + Sync>,
     ref_count: usize,
 }
 
 impl ContextBox {
     /// Creates a new context box for the given data, and sets its reference count to 0.
-    fn new<T: 'static>(data: T) -> Self {
+    fn new<T: 'static + Send + Sync>(data: T) -> Self {
         Self {
             data: Box::new(data),
             ref_count: 0,
@@ -641,6 +661,10 @@ impl Interp {
     pub fn empty() -> Self {
         let mut interp = Self {
             recursion_limit: 1000,
+            timeout: 10000,
+            output: "".to_string(),
+            execution_time: None,
+            rand: OsRng::default(),
             commands: HashMap::new(),
             last_context_id: 0,
             context_map: HashMap::new(),
@@ -713,23 +737,37 @@ impl Interp {
 
         // TODO: Requires file access.  Ultimately, might go in an extension crate if
         // the necessary operations aren't available in core::.
-        interp.add_command("source", commands::cmd_source);
+        //interp.add_command("source", commands::cmd_source);
 
         // TODO: Useful for entire programs written in Molt; but not necessarily wanted in
         // extension scripts.
-        interp.add_command("exit", commands::cmd_exit);
+        //interp.add_command("exit", commands::cmd_exit);
 
         // TODO: Developer Tools
-        interp.add_command("parse", parser::cmd_parse);
-        interp.add_command("pdump", commands::cmd_pdump);
-        interp.add_command("pclear", commands::cmd_pclear);
+        //interp.add_command("parse", parser::cmd_parse);
+        //interp.add_command("pdump", commands::cmd_pdump);
+        //interp.add_command("pclear", commands::cmd_pclear);
 
         // Populate the environment variable.
         // TODO: Really should be a "linked" variable, where sets to it are tracked and
         // written back to the environment.
-        interp.populate_env();
+        //interp.populate_env();
 
         interp
+    }
+
+    pub fn push_output(&mut self, out: &str) {
+        self.output += out
+    }
+
+    pub fn get_output(&mut self) -> String {
+        let out = self.output.clone();
+        self.output = "".to_string();
+        out
+    }
+
+    pub fn get_rand(&mut self) -> MoltFloat {
+        self.rand.gen::<f64>()
     }
 
     /// Populates the TCL `env()` array with the process's environment variables.
@@ -737,7 +775,7 @@ impl Interp {
     /// # TCL Liens
     ///
     /// Changes to the variable are not mirrored back into the process's environment.
-    fn populate_env(&mut self) {
+    fn _populate_env(&mut self) {
         for (key, value) in std::env::vars() {
             // Drop the result, as there's no good reason for this to ever throw an error.
             let _ = self.set_element("env", &key, value.into());
@@ -788,8 +826,13 @@ impl Interp {
     /// ```
 
     pub fn eval(&mut self, script: &str) -> MoltResult {
+        self.execution_time = Some(Instant::now());
+
         let value = Value::from(script);
-        self.eval_value(&value)
+        let ret = self.eval_value(&value);
+
+        self.execution_time = None;
+        ret
     }
 
     /// Evaluates the string value of a [`Value`] as a script.  Returns the `Value`
@@ -805,6 +848,11 @@ impl Interp {
     ///
     /// [`Value`]: ../value/index.html
     pub fn eval_value(&mut self, value: &Value) -> MoltResult {
+        if let Some(exec_time) = self.execution_time {
+            if exec_time.elapsed().as_millis() > self.timeout {
+                return molt_err!(format!("Timeout exceeded! {}ms", self.timeout));
+            }
+        }
         // TODO: Could probably do better, here.  If the value is already a list, for
         // example, can maybe evaluate it as a command without using as_script().
         // Tricky, though.  Don't want to have to parse it as a list.  Need a quick way
@@ -881,7 +929,7 @@ impl Interp {
 
             if let Some(cmd) = self.commands.get(name) {
                 // let start = Instant::now();
-                let cmd = Rc::clone(cmd);
+                let cmd = Arc::clone(cmd);
                 let result = cmd.execute(self, words.as_slice());
                 // self.profile_save(&format!("cmd.execute({})", name), start);
 
@@ -1741,7 +1789,7 @@ impl Interp {
         }
 
         self.commands
-            .insert(name.into(), Rc::new(Command::Native(func, context_id)));
+            .insert(name.into(), Arc::new(Command::Native(func, context_id)));
     }
 
     /// Adds a procedure to the interpreter.
@@ -1758,7 +1806,7 @@ impl Interp {
         };
 
         self.commands
-            .insert(name.into(), Rc::new(Command::Proc(proc)));
+            .insert(name.into(), Arc::new(Command::Proc(proc)));
     }
 
     /// Determines whether or not the interpreter contains a command with the given
@@ -1793,7 +1841,7 @@ impl Interp {
     /// ```
     pub fn rename_command(&mut self, old_name: &str, new_name: &str) {
         if let Some(cmd) = self.commands.get(old_name) {
-            let cmd = Rc::clone(cmd);
+            let cmd = Arc::clone(cmd);
             self.commands.remove(old_name);
             self.commands.insert(new_name.into(), cmd);
         }
@@ -2042,7 +2090,7 @@ impl Interp {
     /// let data: Vec<String> = Vec::new();
     /// let id = interp.save_context(data);
     /// ```
-    pub fn save_context<T: 'static>(&mut self, data: T) -> ContextID {
+    pub fn save_context<T: 'static + Send + Sync>(&mut self, data: T) -> ContextID {
         let id = self.context_id();
         self.context_map.insert(id, ContextBox::new(data));
         id
@@ -2131,7 +2179,7 @@ impl Interp {
     /// let data: Vec<String> = Vec::new();
     /// interp.set_context(id, data);
     /// ```
-    pub fn set_context<T: 'static>(&mut self, id: ContextID, data: T) {
+    pub fn set_context<T: 'static + Send + Sync>(&mut self, id: ContextID, data: T) {
         self.context_map.insert(id, ContextBox::new(data));
     }
 
@@ -2164,6 +2212,74 @@ impl Interp {
                 let avg = rec.nanos / rec.count;
                 println!("{} nanos {}, count={}", avg, name, rec.count);
             }
+        }
+    }
+
+    // Save vars to a file
+    pub fn save_vars(&self) {
+        let mut vars: HashMap<String, String> = HashMap::new();
+
+        for var in self.vars_in_global_scope() {
+            let val = self.var(&var).unwrap();
+            vars.insert(var.as_str().to_owned(), val.as_str().to_owned());
+        }
+        let serialized = serde_json::to_string(&vars).unwrap();
+        let mut output_file = File::create("./vars.json").unwrap();
+        output_file.write(&serialized.as_bytes()).unwrap();
+    }
+
+    pub fn load_vars(&mut self) {
+        let save_file = File::open("./vars.json").unwrap();
+        let reader = BufReader::new(save_file);
+        let vars: HashMap<String, String> = serde_json::from_reader(reader).unwrap();
+
+        vars.iter()
+            .for_each(|(name, val)| self.set_var(&Value::from(name), Value::from(val)).unwrap())
+    }
+
+    // Save commands to a file
+    pub fn save_procs(&self) {
+        #[derive(Serialize)]
+        struct Saved<'a> {
+            name: &'a str,
+            prams: Vec<&'a str>,
+            body: &'a str,
+        }
+
+        let procs: Vec<Saved> = self
+            .commands
+            .iter()
+            .filter_map(|(name, command)| match command.as_ref() {
+                Command::Native(_, _) => None,
+                Command::Proc(proc) => {
+                    let name: &str = name.as_ref();
+                    let prams = proc.parms.iter().map(|p| p.as_str()).collect();
+                    let body = proc.body.as_str();
+                    Some(Saved { name, prams, body })
+                }
+            })
+            .collect();
+
+        let serialized = serde_json::to_string(&procs).unwrap();
+        let mut output_file = File::create("./procs.json").unwrap();
+        output_file.write(&serialized.as_bytes()).unwrap();
+    }
+
+    pub fn load_procs(&mut self) {
+        #[derive(Deserialize)]
+        struct Saved {
+            name: String,
+            prams: Vec<String>,
+            body: String,
+        }
+
+        let save_file = File::open("./procs.json").unwrap();
+        let reader = BufReader::new(save_file);
+        let procs: Vec<Saved> = serde_json::from_reader(reader).unwrap();
+
+        for proc in procs {
+            let prams: Vec<Value> = proc.prams.iter().map(|val| Value::from(val)).collect();
+            self.add_proc(&proc.name, &prams, &Value::from(proc.body));
         }
     }
 }
