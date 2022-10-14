@@ -2216,20 +2216,23 @@ impl Interp {
     }
 
     // Save vars to a file
-    pub fn save_vars(&self) {
+    pub fn save_vars(&self, vars_path: &str) {
         let mut vars: HashMap<String, String> = HashMap::new();
 
         for var in self.vars_in_global_scope() {
+            if var.as_str() == "errorInfo" || var.as_str() == "errorCode" {
+                continue;
+            }
             let val = self.var(&var).unwrap();
             vars.insert(var.as_str().to_owned(), val.as_str().to_owned());
         }
         let serialized = serde_json::to_string(&vars).unwrap();
-        let mut output_file = File::create("./vars.json").unwrap();
+        let mut output_file = File::create(vars_path).unwrap();
         output_file.write(&serialized.as_bytes()).unwrap();
     }
 
-    pub fn load_vars(&mut self) {
-        let save_file = File::open("./vars.json").unwrap();
+    pub fn load_vars(&mut self, vars_path: &str) {
+        let save_file = File::open(vars_path).unwrap();
         let reader = BufReader::new(save_file);
         let vars: HashMap<String, String> = serde_json::from_reader(reader).unwrap();
 
@@ -2238,7 +2241,7 @@ impl Interp {
     }
 
     // Save commands to a file
-    pub fn save_procs(&self) {
+    pub fn save_procs(&self, proc_path: &str) {
         #[derive(Serialize)]
         struct Saved<'a> {
             name: &'a str,
@@ -2261,11 +2264,11 @@ impl Interp {
             .collect();
 
         let serialized = serde_json::to_string(&procs).unwrap();
-        let mut output_file = File::create("./procs.json").unwrap();
+        let mut output_file = File::create(proc_path).unwrap();
         output_file.write(&serialized.as_bytes()).unwrap();
     }
 
-    pub fn load_procs(&mut self) {
+    pub fn load_procs(&mut self, proc_path: &str) {
         #[derive(Deserialize)]
         struct Saved {
             name: String,
@@ -2273,7 +2276,7 @@ impl Interp {
             body: String,
         }
 
-        let save_file = File::open("./procs.json").unwrap();
+        let save_file = File::open(proc_path).unwrap();
         let reader = BufReader::new(save_file);
         let procs: Vec<Saved> = serde_json::from_reader(reader).unwrap();
 
