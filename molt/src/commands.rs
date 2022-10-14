@@ -10,6 +10,7 @@ use crate::interp::Interp;
 use crate::types::*;
 use crate::util;
 use crate::*;
+use std::fmt::format;
 use std::fs;
 use std::time::Instant;
 
@@ -798,6 +799,22 @@ pub fn cmd_lreplace(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltR
     let first = argv[2].as_int()? as usize;
     let last = argv[3].as_int()? as usize;
     let mut new = original.to_vec();
+
+    if first >= original.len() {
+        return molt_err!(format!(
+            "first index {} out of range for list of length {}",
+            first,
+            original.len()
+        ));
+    }
+
+    if last > original.len() {
+        return molt_err!(format!(
+            "last index {} out of range for list of length {}",
+            last,
+            original.len()
+        ));
+    }
 
     if argv.len() > 4 {
         let elements = argv[4..].to_vec();
