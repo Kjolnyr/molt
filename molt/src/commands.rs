@@ -434,7 +434,6 @@ pub fn cmd_for(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult 
 pub fn cmd_foreach(interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
     check_args(1, argv, 4, 4, "varList list body")?;
 
-
     let var_list = &*argv[1].as_list()?;
     let list = &*argv[2].as_list()?;
     let body = &argv[3];
@@ -786,6 +785,27 @@ pub fn cmd_llength(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltRe
     check_args(1, argv, 2, 2, "list")?;
 
     molt_ok!(argv[1].as_list()?.len() as MoltInt)
+}
+
+/// # lreplace *list* *first* *last* ?*element* ..?
+///
+/// Returns a new list formed by replacing one or more elements of list with the element arguments.
+/// last cannot be `end` for now.
+pub fn cmd_lreplace(_interp: &mut Interp, _: ContextID, argv: &[Value]) -> MoltResult {
+    check_args(1, argv, 4, 0, "list first last ?element ..?")?;
+
+    let original = argv[1].as_list()?;
+    let first = argv[2].as_int()? as usize;
+    let last = argv[3].as_int()? as usize;
+    let mut new = original.to_vec();
+
+    if argv.len() > 4 {
+        let elements = argv[4..].to_vec();
+        new.splice(first..last + 1, elements);
+    } else {
+        new.drain(first..last + 1);
+    }
+    molt_ok!(Value::from(new))
 }
 
 /// # pdump
