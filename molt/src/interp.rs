@@ -2224,9 +2224,11 @@ impl Interp {
             if var.as_str() == "errorInfo" || var.as_str() == "errorCode" {
                 continue;
             }
-            let val = self.var(&var).unwrap();
-            vars.insert(var.as_str().to_owned(), val.as_str().to_owned());
+            if let Ok(val) = self.var(&var) {
+                vars.insert(var.as_str().to_owned(), val.as_str().to_owned());
+            }
         }
+
         let serialized = serde_json::to_string(&vars).unwrap();
         let mut output_file = File::create(vars_path).unwrap();
         output_file.write(&serialized.as_bytes()).unwrap();
@@ -2343,6 +2345,7 @@ impl Procedure {
                 interp.set_scalar(vec[0].as_str(), vec[1].clone())?;
             } else {
                 // We don't; we're missing a required argument.
+                interp.pop_scope();
                 return self.wrong_num_args(&argv[0]);
             }
         }
@@ -2350,6 +2353,7 @@ impl Procedure {
         // NEXT, do we have any arguments left over?
 
         if argi != argv.len() {
+            interp.pop_scope();
             return self.wrong_num_args(&argv[0]);
         }
 

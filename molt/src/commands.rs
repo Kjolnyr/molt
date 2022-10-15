@@ -10,7 +10,6 @@ use crate::interp::Interp;
 use crate::types::*;
 use crate::util;
 use crate::*;
-use std::fmt::format;
 use std::fs;
 use std::time::Instant;
 
